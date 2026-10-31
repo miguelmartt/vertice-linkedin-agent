@@ -1,0 +1,10 @@
+[project]
+name = "vertice-linkedin-agent"
+version = "0.1.0"
+description = "LinkedIn agent: finds AI and dev news, drafts posts with Claude Code and publishes them after approval on Telegram"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.setuptools.package-data]
+vla = ["prompts/*.md"]

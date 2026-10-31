@@ -1,0 +1,60 @@
+[Unit]
+Description=vertice-linkedin-agent (posts de LinkedIn con Claude Code y Telegram)
+Documentation=https://github.com/miguelmartt/vertice-linkedin-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vla
+Group=vla
+EnvironmentFile=/etc/vertice-linkedin-agent/env
+Environment=HOME=/var/lib/vertice-linkedin-agent
+Environment=VLA_STATE_DIR=/var/lib/vertice-linkedin-agent
+Environment=PATH=/var/lib/vertice-linkedin-agent/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+Environment=DISABLE_AUTOUPDATER=1
+WorkingDirectory=/opt/vertice-linkedin-agent
+ExecStart=/usr/bin/python3 -m vla run
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+UMask=0077
+
+# Sistema de archivos: solo escribe en su carpeta de estado y no puede ejecutar
+# nada de ella salvo Claude Code, que tampoco puede modificar.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/vertice-linkedin-agent
+ReadOnlyPaths=-/var/lib/vertice-linkedin-agent/.local/bin -/var/lib/vertice-linkedin-agent/.local/share/claude
+NoExecPaths=/var/lib/vertice-linkedin-agent
+ExecPaths=-/var/lib/vertice-linkedin-agent/.local/bin -/var/lib/vertice-linkedin-agent/.local/share/claude
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+RemoveIPC=yes
+
+# Núcleo y procesos.
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Sin MemoryDenyWriteExecute: el runtime de Claude Code compila JavaScript al vuelo.
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
