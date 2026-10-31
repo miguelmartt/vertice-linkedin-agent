@@ -21,7 +21,7 @@ from .db import DB
 from .linkedin import IMAGE_TYPES, MAX_COMMENTARY, LinkedIn, LinkedInError, parse_callback, post_url, to_little
 from .llm import LLM, LLMError
 from .sources import KIND_LABEL, KIND_PLURAL
-from .telegram import Telegram, esc
+from .telegram import Telegram, TelegramError, esc
 from .util import fingerprint, now as tz_now, parse_date, shorten, strip_accents
 
 log = logging.getLogger("vla")
@@ -606,7 +606,13 @@ class App:
         hello = "🟢 Agente de LinkedIn en marcha. /ayuda para ver qué puedo hacer."
         if not (self.db.get_meta("li_profile") or {}).get("sub") and not self.cfg.dry_run:
             hello += "\nAntes de nada, conéctame a tu LinkedIn con /linkedin."
-        self.tg.send(hello)
+        try:
+            self.tg.send(hello)
+        except TelegramError as exc:
+            # Lo normal es que aún no hayas abierto el chat con el bot: sigue escuchando y
+            # contesta en cuanto le escribas /start.
+            log.warning("No puedo escribirte por Telegram (%s). Abre el chat con el bot y pulsa Iniciar",
+                        http.redact(str(exc)))
         while not self.stop.is_set():
             dead = [t.name for t in threads if not t.is_alive()]
             if dead and self.cfg.telegram_token:

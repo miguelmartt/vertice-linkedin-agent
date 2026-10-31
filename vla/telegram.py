@@ -110,3 +110,7 @@ class Telegram:
 
     def me(self) -> Dict[str, Any]:
         return self.call("getMe")
+
+    def chat(self) -> Dict[str, Any]:
+        """Datos del chat configurado. Falla con «chat not found» si aún no has escrito al bot."""
+        return self.call("getChat", {"chat_id": self.chat_id})

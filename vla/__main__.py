@@ -75,6 +75,14 @@ def cmd_check(cfg: Config, claude: bool = False) -> int:
         try:
             me = app.tg.me()
             line(True, "Telegram", f"@{me.get('username')}")
+            try:
+                app.tg.chat()
+                line(True, "Chat con el bot", "abierto")
+            except Exception as exc:
+                # El servicio arranca igual y te contesta en cuanto le escribas.
+                hint = (f"abre @{me.get('username')} en Telegram y pulsa Iniciar"
+                        if "chat not found" in str(exc) else str(exc)[:200])
+                line(False, "Chat con el bot", hint, required=False)
         except Exception as exc:
             line(False, "Telegram", str(exc)[:200])
     profile = app.db.get_meta("li_profile") or {}

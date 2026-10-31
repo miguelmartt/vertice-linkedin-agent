@@ -8,6 +8,8 @@ from unittest import mock
 from vla import http
 from vla.config import load_env_file
 from vla.llm import claude_env
+from vla.telegram import TelegramError
+from tests.helpers import cleanup, make_app
 
 
 class HardeningTest(unittest.TestCase):
@@ -33,6 +35,17 @@ class HardeningTest(unittest.TestCase):
             target = {}
             load_env_file(path, target)
         self.assertEqual(target, {"VLA_ABOUT": "Dev $(rm -r /) `id`", "VLA_OWNER": "Miguel Martínez"})
+
+    def test_service_starts_before_you_open_the_chat_with_the_bot(self):
+        app = make_app()
+        try:
+            app.tg.send = mock.Mock(side_effect=TelegramError("Bad Request: chat not found"))
+            app.stop.set()
+            with self.assertLogs("vla", level="WARNING") as logs:
+                self.assertTrue(app.run_forever())
+            self.assertIn("pulsa Iniciar", "\n".join(logs.output))
+        finally:
+            cleanup(app)
 
 
 if __name__ == "__main__":
