@@ -105,6 +105,9 @@ class Config:
     owner: str
     about: str
     site_url: str
+    card_brand: str
+    images: bool
+    chromium: str
     env: Mapping[str, str]
 
     @property
@@ -114,6 +117,16 @@ class Config:
     @property
     def sandbox_dir(self) -> Path:
         return self.state_dir / "llm-sandbox"
+
+    @property
+    def cards_dir(self) -> Path:
+        return self.state_dir / "cards"
+
+    @property
+    def site_host(self) -> str:
+        """El dominio de VLA_SITE_URL, para el pie de las imágenes."""
+        host = self.site_url.split("://", 1)[-1].split("/", 1)[0].lower()
+        return host[4:] if host.startswith("www.") else host
 
     @classmethod
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "Config":
@@ -146,6 +159,9 @@ class Config:
             owner=_get(env, "VLA_OWNER", ""),
             about=_get(env, "VLA_ABOUT", ""),
             site_url=_get(env, "VLA_SITE_URL", "").rstrip("/"),
+            card_brand=_get(env, "VLA_CARD_BRAND", _get(env, "VLA_OWNER", "")),
+            images=_bool(env, "VLA_IMAGES", True),
+            chromium=_get(env, "VLA_CHROMIUM", ""),
             env=env,
         )
 

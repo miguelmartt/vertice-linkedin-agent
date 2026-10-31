@@ -15,7 +15,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import http, sources
+from . import card, http, sources
 from .config import Config
 from .db import DB
 from .linkedin import IMAGE_TYPES, MAX_COMMENTARY, LinkedIn, LinkedInError, parse_callback, post_url, to_little
@@ -26,7 +26,10 @@ from .util import fingerprint, now as tz_now, parse_date, shorten, strip_accents
 
 log = logging.getLogger("vla")
 
-PROMPT = (Path(__file__).parent / "prompts" / "post.md").read_text(encoding="utf-8")
+PROMPTS = Path(__file__).parent / "prompts"
+IMAGE_RULES = (PROMPTS / "image_rules.md").read_text(encoding="utf-8")
+PROMPT = (PROMPTS / "post.md").read_text(encoding="utf-8").replace("{{image_rules}}", IMAGE_RULES)
+IMAGE_PROMPT = (PROMPTS / "image.md").read_text(encoding="utf-8").replace("{{image_rules}}", IMAGE_RULES)
 POST_SCHEMA = {
     "type": "object",
     "properties": {
@@ -34,8 +37,9 @@ POST_SCHEMA = {
         "text": {"type": "string"},
         "hashtags": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
         "why": {"type": "string"},
+        "image": card.SCHEMA,
     },
-    "required": ["item_id", "text", "hashtags", "why"],
+    "required": ["item_id", "text", "hashtags", "why", "image"],
     "additionalProperties": False,
 }
 
@@ -48,6 +52,7 @@ MAX_IMAGE = 5_000_000
 AUTH_TTL = timedelta(minutes=30)
 TOKEN_WARNINGS = (7, 2)   # días antes de que caduque el permiso de LinkedIn
 SOURCE_ALERT_AFTER = 3    # recogidas seguidas fallando antes de avisar
+CARD_DAYS = 60            # las imágenes de posts cerrados se borran a los dos meses
 WEEKDAYS = ("lun", "mar", "mié", "jue", "vie", "sáb", "dom")
 
 
@@ -55,17 +60,24 @@ class NeedsAuth(Exception):
     """Falta el permiso de LinkedIn o ha caducado."""
 
 
-def review_buttons(post: Dict[str, Any]) -> List[List[Tuple[str, str]]]:
+def post_version(post: Dict[str, Any]) -> str:
+    """Lo que aprueba «Publicar»: el texto y la imagen exactos que tenías delante."""
+    image = json.dumps(post.get("card"), ensure_ascii=False, sort_keys=True)
+    return fingerprint(post["text"] + "\n" + image)
+
+
+def review_buttons(post: Dict[str, Any], images: bool = False) -> List[List[Tuple[str, str]]]:
     pid = post["id"]
-    return [
-        [("🚀 Publicar", f"publish:{pid}:{fingerprint(post['text'])}"), ("✏️ Cambios", f"changes:{pid}")],
-        [("🔀 Otro tema", f"other:{pid}"), ("🗑 Descartar", f"discard:{pid}")],
-    ]
+    first = [("🚀 Publicar", f"publish:{pid}:{post_version(post)}"), ("✏️ Cambios", f"changes:{pid}")]
+    if not images:
+        return [first, [("🔀 Otro tema", f"other:{pid}"), ("🗑 Descartar", f"discard:{pid}")]]
+    return [first, [("🎨 Otra imagen", f"image:{pid}"), ("🔀 Otro tema", f"other:{pid}")],
+            [("🗑 Descartar", f"discard:{pid}")]]
 
 
 def retry_buttons(post: Dict[str, Any]) -> List[List[Tuple[str, str]]]:
     pid = post["id"]
-    return [[("🔁 Reintentar", f"publish:{pid}:{fingerprint(post['text'])}"), ("🗑 Descartar", f"discard:{pid}")]]
+    return [[("🔁 Reintentar", f"publish:{pid}:{post_version(post)}"), ("🗑 Descartar", f"discard:{pid}")]]
 
 
 def clean_tag(tag: str) -> str:
@@ -103,6 +115,8 @@ class App:
         self.get_json: Callable[..., Any] = http.request_json
         self.fetch: Callable[..., http.Response] = http.fetch_public
         self.request: Callable[..., http.Response] = http.request
+        self.chromium = card.find_chromium(cfg.chromium) if cfg.images else None
+        self.render_png: Callable[[str], bytes] = self._render_png
         self.tasks: "queue.Queue[Tuple[str, Callable[..., Any], tuple]]" = queue.Queue()
         self.stop = threading.Event()
         self.busy: Optional[str] = None
@@ -114,6 +128,17 @@ class App:
 
     def today(self) -> date:
         return self.now().date()
+
+    post_version = staticmethod(post_version)
+
+    @property
+    def images_on(self) -> bool:
+        return bool(self.cfg.images and self.chromium)
+
+    def _render_png(self, page: str) -> bytes:
+        if not self.chromium:
+            raise card.CardError("no hay Chromium: instala chromium-headless o pon VLA_CHROMIUM")
+        return card.render(page, self.chromium)
 
     def enqueue(self, name: str, fn: Callable[..., Any], *args: Any) -> None:
         log.info("En cola: %s", name)
@@ -214,8 +239,11 @@ class App:
 
     # --- redactar -----------------------------------------------------------
 
+    def fill(self, template: str) -> str:
+        return template.replace("{{owner}}", self.cfg.owner).replace("{{about}}", self.cfg.about)
+
     def system_prompt(self) -> str:
-        return PROMPT.replace("{{owner}}", self.cfg.owner).replace("{{about}}", self.cfg.about)
+        return self.fill(PROMPT)
 
     def material(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Lo que Claude sabe de un candidato: sus datos y el texto de su página o su README."""
@@ -259,7 +287,9 @@ class App:
             problems.append(f"el texto tiene {len(body)} caracteres y el máximo es {MAX_CHARS}")
         hashtags = [t for t in (clean_tag(h) for h in (result.get("hashtags") or [])) if t][:3]
         why = shorten(str(result.get("why") or ""), 200)
-        return {"item_id": item_id, "text": body, "hashtags": hashtags, "why": why}, problems
+        image, image_problems = card.clean_spec(result.get("image"))
+        problems += [f"imagen: {p}" for p in image_problems]
+        return {"item_id": item_id, "text": body, "hashtags": hashtags, "why": why, "image": image}, problems
 
     def write(self, items: Sequence[Dict[str, Any]], feedback: Optional[List[str]] = None,
               previous: Optional[str] = None) -> Dict[str, Any]:
@@ -269,7 +299,8 @@ class App:
         since = (self.now() - timedelta(days=30)).isoformat()
         recent = [
             {"fecha": p["created"][:10], "tipo": KIND_LABEL.get(p["kind"], p["kind"]), "tema": p["item_title"],
-             "inicio": shorten(p["text"].split("\n", 1)[0], 140)}
+             "inicio": shorten(p["text"].split("\n", 1)[0], 140),
+             "imagen": " ".join(str((p.get("card") or {}).get(k, "")) for k in ("layout", "theme")).strip()}
             for p in self.db.recent_posts(since)[:10]
         ]
         payload: Dict[str, Any] = {"hoy": self.today().isoformat(), "candidatos": material, "posts_recientes": recent}
@@ -286,6 +317,11 @@ class App:
                                                           self.cfg.model), items)
             if not problems:
                 return result
+        if all(p.startswith("imagen:") for p in problems):
+            # El texto vale: sale sin imagen (con la tarjeta del enlace) antes que sin post.
+            log.warning("Imagen descartada: %s", "; ".join(problems))
+            result["image"] = None
+            return result
         raise LLMError("el borrador de Claude no cumple las reglas: " + "; ".join(problems))
 
     def draft(self, manual: bool = False, allow_own: bool = True, item_id: Optional[int] = None) -> None:
@@ -313,9 +349,67 @@ class App:
         result = self.write(items)
         item = next(i for i in items if i["id"] == result["item_id"])
         text = compose(result["text"], item["url"], result["hashtags"])
-        pid = self.db.add_post(self.now(), item["id"], text, result["why"])
+        pid = self.db.add_post(self.now(), item["id"], text, result["why"], card=result["image"])
         self.db.set_item_status(item["id"], "drafted")
-        self.send_review(self.db.post(pid))  # type: ignore[arg-type]
+        post = self.db.post(pid)
+        self.make_card(post)  # type: ignore[arg-type]
+        self.send_review(post)  # type: ignore[arg-type]
+
+    # --- imagen -------------------------------------------------------------
+
+    def card_path(self, pid: int) -> Path:
+        return self.cfg.cards_dir / f"post-{pid}.png"
+
+    def make_card(self, post: Dict[str, Any]) -> Optional[bytes]:
+        """Pinta la imagen del post y la guarda. Si no se puede, el post sale con la tarjeta del enlace."""
+        path = self.card_path(post["id"])
+        if path.exists():
+            path.unlink()
+        if not post.get("card") or not self.images_on:
+            return None
+        item = self.db.item(post["item_id"]) or {}
+        page = card.html_for(post["card"], eyebrow=KIND_LABEL.get(item.get("kind", ""), "Novedad"),
+                             source=card.short_source(item.get("url", "")), brand=self.cfg.card_brand,
+                             site=self.cfg.site_host, day=self.today())
+        try:
+            png = self.render_png(page)
+        except Exception as exc:
+            log.warning("No he podido pintar la imagen del post %s: %s", post["id"], http.redact(str(exc))[:300])
+            return None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(png)
+        return png
+
+    def card_png(self, post: Dict[str, Any]) -> Optional[bytes]:
+        path = self.card_path(post["id"])
+        if path.exists():
+            return path.read_bytes()
+        return self.make_card(post) if post.get("card") else None
+
+    def new_image(self, pid: int) -> None:
+        """Otra imagen para el mismo post: Claude propone otro diseño o titular."""
+        post = self.db.post(pid)
+        item = self.db.item(post["item_id"]) if post else None
+        if not post or not item:
+            return
+        payload = {"hoy": self.today().isoformat(), "post": post["text"], "tema": self.material(item),
+                   "imagen_anterior": post.get("card")}
+        prompt = json.dumps(payload, ensure_ascii=False, indent=1)
+        problems: List[str] = []
+        for _ in range(2):
+            ask = prompt if not problems else (
+                prompt + "\n\nTu respuesta anterior no valía: " + "; ".join(problems) + ". Corrígelo.")
+            spec, problems = card.clean_spec(self.llm.run("imagen", self.fill(IMAGE_PROMPT), ask, card.SCHEMA,
+                                                          self.cfg.model))
+            if not problems:
+                break
+        else:
+            raise LLMError("la imagen de Claude no cumple las reglas: " + "; ".join(problems))
+        self.db.update_post(pid, self.now(), card=spec, status="review", last_error=None)
+        post = self.db.post(pid)
+        if not self.make_card(post):  # type: ignore[arg-type]
+            self.tg.send("⚠️ No he podido pintar la imagen nueva: el post saldría con la tarjeta del enlace.")
+        self.send_review(post)  # type: ignore[arg-type]
 
     def send_review(self, post: Dict[str, Any]) -> None:
         item = self.db.item(post["item_id"]) or {}
@@ -328,9 +422,21 @@ class App:
             lines.append(esc(metrics))
         if post.get("why"):
             lines.append(f"Por qué: {esc(post['why'])}")
-        card = "con tarjeta e imagen del enlace" if item.get("image") else "con tarjeta del enlace, sin imagen"
-        lines += ["", f"<blockquote>{esc(post['text'])}</blockquote>", f"{len(post['text'])} caracteres · {card}"]
-        message_id = self.tg.send("\n".join(lines), review_buttons(post))
+        path = self.card_path(post["id"])
+        layout = (post.get("card") or {}).get("layout", "")
+        if path.exists():
+            try:
+                self.tg.send_photo(path.read_bytes(), f"🖼 Imagen del post · diseño «{esc(layout)}»")
+                media = f"con la imagen de arriba (diseño «{esc(layout)}»)"
+            except Exception as exc:  # sin vista previa se puede revisar igual
+                log.warning("No he podido mandar la imagen por Telegram: %s", http.redact(str(exc))[:200])
+                media = "con imagen (no he podido enseñártela aquí)"
+        elif item.get("image"):
+            media = "con tarjeta e imagen del enlace"
+        else:
+            media = "con tarjeta del enlace, sin imagen"
+        lines += ["", f"<blockquote>{esc(post['text'])}</blockquote>", f"{len(post['text'])} caracteres · {media}"]
+        message_id = self.tg.send("\n".join(lines), review_buttons(post, self.images_on))
         self.db.update_post(post["id"], self.now(), message_id=message_id)
 
     def redo(self, pid: int, feedback: str) -> None:
@@ -342,8 +448,11 @@ class App:
         notes = list(post.get("feedback") or []) + [feedback]
         result = self.write([item], feedback=notes, previous=post["text"])
         text = compose(result["text"], item["url"], result["hashtags"])
-        self.db.update_post(pid, self.now(), text=text, feedback=notes, status="review", last_error=None)
-        self.send_review(self.db.post(pid))  # type: ignore[arg-type]
+        self.db.update_post(pid, self.now(), text=text, feedback=notes, status="review", last_error=None,
+                            card=result["image"])
+        post = self.db.post(pid)
+        self.make_card(post)  # type: ignore[arg-type]
+        self.send_review(post)  # type: ignore[arg-type]
 
     def replace_text(self, pid: int, text: str) -> None:
         """Tu texto, tal cual, en lugar del borrador."""
@@ -429,9 +538,22 @@ class App:
             return "urn:li:share:dry-run", " (simulado: VLA_DRY_RUN está activado)"
         token, author = self.linkedin_session()
         commentary = to_little(post["text"])
+        note = ""
+        png = self.card_png(post) if self.images_on else None
+        if png:
+            # Post con imagen grande: el enlace va en el texto.
+            try:
+                image = self.li.upload_image(token, author, png)
+                alt = (post.get("card") or {}).get("alt") or ""
+                return self.li.create_post(token, author, commentary, image={"id": image, "altText": alt}), ""
+            except LinkedInError as exc:
+                if exc.status in (401, 403, 429) or exc.status >= 500:
+                    raise
+                log.warning("LinkedIn ha rechazado la imagen (%s); publico con la tarjeta del enlace", exc)
+                note = " (con la tarjeta del enlace: LinkedIn ha rechazado la imagen)"
         article = self.article(token, author, item)
         try:
-            return self.li.create_post(token, author, commentary, article), ""
+            return self.li.create_post(token, author, commentary, article), note
         except LinkedInError as exc:
             if exc.status in (401, 403, 429) or exc.status >= 500:
                 raise
@@ -477,10 +599,11 @@ class App:
         expires_at = self.now() + timedelta(seconds=int(token.get("expires_in") or 60 * 86400))
         self.db.set_meta("li_token", {"access_token": access, "expires_at": expires_at.isoformat(),
                                       "scope": token.get("scope")})
-        self.db.set_meta("li_profile", {"sub": info["sub"], "name": info.get("name")})
+        name = " ".join(str(info.get("name") or "").split())
+        self.db.set_meta("li_profile", {"sub": info["sub"], "name": name})
         self.db.set_meta("li_warned", [])
         self.db.log_event(self.now(), "linkedin_connected", {"expires_at": expires_at.isoformat()})
-        return (f"✅ Conectado a LinkedIn como <b>{esc(info.get('name') or info['sub'])}</b>. "
+        return (f"✅ Conectado a LinkedIn como <b>{esc(name or info['sub'])}</b>. "
                 f"El permiso dura hasta el {expires_at:%d/%m/%Y}; te aviso antes de que caduque.")
 
     # --- mantenimiento diario -----------------------------------------------
@@ -492,6 +615,17 @@ class App:
         retired = self.db.retire_items((current - timedelta(days=RETIRE_DAYS)).isoformat())
         if retired:
             log.info("%s temas antiguos retirados", retired)
+        self.prune_cards(current)
+
+    def prune_cards(self, current: datetime) -> None:
+        """Borra las imágenes de más de dos meses, salvo la del borrador abierto."""
+        keep = self.db.open_post()
+        limit = (current - timedelta(days=CARD_DAYS)).timestamp()
+        for path in self.cfg.cards_dir.glob("post-*.png"):
+            if keep and path == self.card_path(keep["id"]):
+                continue
+            if path.stat().st_mtime < limit:
+                path.unlink()
 
     def check_token(self, current: datetime) -> None:
         """Avisa a 7 y a 2 días de que caduque el permiso de LinkedIn, y cuando caduca."""
@@ -561,6 +695,10 @@ class App:
             lines.append(f"Borrador abierto: #{open_post['id']} ({open_post['status']})")
         published = self.db.recent_posts((current - timedelta(days=30)).isoformat())
         lines.append(f"Publicados en 30 días: {len(published)}")
+        if self.images_on:
+            lines.append("Imágenes: ✅ con Chromium")
+        elif self.cfg.images:
+            lines.append("Imágenes: ❌ falta Chromium (dnf install chromium-headless)")
         lines.append(f"Claude: {self.llm.calls_left_today()} llamadas disponibles hoy")
         if self.busy:
             lines.append(f"Ahora mismo: {esc(self.busy)}")

@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS posts (
     message_id INTEGER,
     linkedin_urn TEXT,
     published_at TEXT,
-    last_error TEXT
+    last_error TEXT,
+    card TEXT
 );
 CREATE TABLE IF NOT EXISTS llm_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,7 +72,9 @@ CREATE TABLE IF NOT EXISTS events (
 
 # Un post está abierto mientras espera tu decisión o se está publicando.
 OPEN_STATUSES = ("review", "publishing", "failed")
-JSON_FIELDS = ("metrics", "feedback")
+JSON_FIELDS = ("metrics", "feedback", "card")
+# Columnas añadidas después de la primera versión: init() las crea en las bases de datos antiguas.
+MIGRATIONS = (("posts", "card", "TEXT"),)
 
 
 def _encode(fields: Dict[str, Any]) -> Dict[str, Any]:
@@ -105,8 +108,12 @@ class DB:
         return conn
 
     def init(self) -> None:
-        self.conn().executescript(SCHEMA)
-        self.conn().commit()
+        conn = self.conn()
+        conn.executescript(SCHEMA)
+        for table, column, kind in MIGRATIONS:
+            if column not in {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+        conn.commit()
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> sqlite3.Cursor:
         conn = self.conn()
@@ -205,9 +212,9 @@ class DB:
     # --- posts --------------------------------------------------------------
 
     def add_post(self, at: datetime, item_id: int, text: str, why: str,
-                 feedback: Optional[List[str]] = None) -> int:
+                 feedback: Optional[List[str]] = None, card: Optional[Dict[str, Any]] = None) -> int:
         data = _encode({"item_id": item_id, "created": at.isoformat(), "updated": at.isoformat(),
-                        "status": "review", "text": text, "why": why, "feedback": feedback or []})
+                        "status": "review", "text": text, "why": why, "feedback": feedback or [], "card": card})
         cols = ", ".join(data)
         marks = ", ".join("?" for _ in data)
         return int(self.execute(f"INSERT INTO posts ({cols}) VALUES ({marks})", list(data.values())).lastrowid)

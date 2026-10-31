@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from .linkedin import parse_callback
 from .sources import KIND_LABEL
 from .telegram import esc
-from .util import fingerprint, shorten
+from .util import shorten
 
 if TYPE_CHECKING:
     from .app import App
@@ -26,7 +26,7 @@ log = logging.getLogger("vla.bot")
 
 HELP = """🤖 <b>Agente de LinkedIn</b>
 
-Busco novedades (modelos de IA, repos de GitHub que despegan, noticias tech y tus repos open source), redacto un post con Claude y te lo mando aquí. En tu LinkedIn solo se publica lo que apruebas con «Publicar».
+Busco novedades (modelos de IA, repos de GitHub que despegan, noticias tech y tus repos open source), redacto un post con Claude, le preparo una imagen y te lo mando aquí. En tu LinkedIn solo se publica lo que apruebas con «Publicar»; «Otra imagen» cambia la imagen sin tocar el texto.
 
 /borrador · preparar un post ahora
 /temas · lo que tengo para los próximos posts
@@ -58,6 +58,7 @@ EXPECTED = {
     "changes": ("review", "failed"),
     "other": ("review", "failed"),
     "discard": ("review", "failed"),
+    "image": ("review", "failed"),
 }
 
 
@@ -209,7 +210,7 @@ class Bot:
             self.tg.answer(cq["id"], f"Ese borrador ya está {STATUS_LABEL.get(post['status'], post['status'])}")
             self.tg.edit_buttons(message_id)
             return
-        if action == "publish" and version != fingerprint(post["text"]):
+        if action == "publish" and version != app.post_version(post):
             self.tg.answer(cq["id"], "Ese botón es de una versión anterior: usa el del último borrador")
             self.tg.edit_buttons(message_id)
             return
@@ -229,6 +230,9 @@ class Bot:
             app.enqueue(f"otro tema #{target}", app.other_topic, target)
         elif action == "discard":
             app.discard(target)
+        elif action == "image":
+            self.tg.send("🎨 Preparo otra imagen.")
+            app.enqueue(f"otra imagen #{target}", app.new_image, target)
 
     # --- texto libre --------------------------------------------------------
 

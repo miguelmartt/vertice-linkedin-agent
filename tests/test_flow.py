@@ -1,13 +1,14 @@
 """Recorrido completo con dobles: buscar → borrador → revisar en Telegram → publicar en LinkedIn."""
 
 import json
+import os
 import unittest
 from datetime import timedelta
 
 from vla import linkedin
 from vla.linkedin import to_little
 from tests.helpers import (
-    CHAT, OWN_URL, POST_TEXT, FakeClaude, bot_for, cleanup, click, connect, drain, make_app, say,
+    ALT_CARD, CARD, CHAT, OWN_URL, POST_TEXT, FakeClaude, bot_for, cleanup, click, connect, drain, make_app, say,
 )
 
 
@@ -22,6 +23,13 @@ class FlowTest(unittest.TestCase):
     def tearDown(self):
         cleanup(self.app)
 
+    def use_app(self, **env: str) -> None:
+        """Cambia la app del test por otra con esta configuración."""
+        cleanup(self.app)
+        self.app = make_app(**env)
+        self.bot, self.tg, self.li = bot_for(self.app), self.app.tg, self.app.li.request
+        self.app.collect()
+
     def test_collect_stores_each_source_without_duplicates_or_own_repos_as_trending(self):
         rows = self.app.db.query("SELECT kind, title FROM items ORDER BY kind, title")
         self.assertEqual(
@@ -32,16 +40,26 @@ class FlowTest(unittest.TestCase):
         self.app.collect()  # otra búsqueda no duplica nada
         self.assertEqual(self.app.db.one("SELECT COUNT(*) AS n FROM items")["n"], 5)
 
-    def test_own_repo_first_then_published_with_card_and_escaped_text(self):
+    def test_own_repo_first_then_published_with_its_image_and_escaped_text(self):
         connect(self.app)
         self.app.draft()
         post = self.app.db.open_post()
         self.assertTrue(post["text"].startswith(POST_TEXT))
         self.assertIn(OWN_URL, post["text"])
         self.assertTrue(post["text"].endswith("#IA #OpenSource #Automatizacion"))
+        # Claude propone la imagen con el post; se pinta y te llega antes del texto.
+        self.assertEqual(post["card"]["layout"], "lista")
+        page = self.app.render_png.pages[0]
+        for expected in ("solo si tú quieres", "Repo propio", "github.com/miguelmartt/demo-agent"):
+            self.assertIn(expected, page)
+        photo, caption = self.tg.photos[0]
+        self.assertTrue(photo.startswith(b"\x89PNG"))
+        self.assertIn("lista", caption)
         review = self.tg.messages[-1][0]
         self.assertIn("Repo propio", review)
         self.assertIn("<blockquote>", review)
+        self.assertIn("con la imagen de arriba", review)
+        self.assertTrue(self.tg.button("image:"))
         # Claude recibió el README en castellano de tu repo.
         self.assertIn("Qué hace, en castellano", self.app.llm.runner.prompts[0])
 
@@ -54,15 +72,88 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(body["commentary"], to_little(post["text"]))
         self.assertIn("\\(eso es lo importante\\)", body["commentary"])
         self.assertIn("{hashtag|\\#|OpenSource}", body["commentary"])
-        self.assertEqual(body["content"]["article"]["source"], OWN_URL)
-        self.assertEqual(body["content"]["article"]["thumbnail"], "urn:li:image:IMG1")
+        self.assertEqual(body["content"], {"media": {"id": "urn:li:image:IMG1", "altText": CARD["alt"]}})
         upload = next(kw for m, url, kw in self.li.calls if m == "PUT")
+        self.assertEqual(upload["body"], photo)  # sube la misma imagen que viste
         self.assertEqual(upload["headers"]["Authorization"], "Bearer " + "AQ" + "t" * 60)
         done = self.app.db.post(post["id"])
         self.assertEqual((done["status"], done["linkedin_urn"]), ("published", "urn:li:share:777"))
         self.assertEqual(self.app.db.item(post["item_id"])["status"], "used")
         self.assertIn("https://www.linkedin.com/feed/update/urn:li:share:777/", self.tg.text())
         self.assertNotIn("⚠️", self.tg.text())
+
+    def test_without_images_the_post_keeps_the_link_card(self):
+        self.use_app(VLA_IMAGES="0")
+        connect(self.app)
+        self.app.draft()
+        self.assertEqual(self.tg.photos, [])
+        self.assertNotIn("image:", str(self.tg.last_buttons()))
+        click(self.bot, self.tg.button("publish:"))
+        drain(self.app)
+        body = self.li.posts()[0]
+        self.assertEqual(body["content"]["article"]["source"], OWN_URL)
+        self.assertEqual(body["content"]["article"]["thumbnail"], "urn:li:image:IMG1")
+
+    def test_new_image_replaces_the_picture_and_the_old_publish_button(self):
+        connect(self.app)
+        self.app.draft()
+        old_publish = self.tg.button("publish:")
+        click(self.bot, self.tg.button("image:"))
+        drain(self.app)
+        prompt = json.loads(self.app.llm.runner.prompts[-1])
+        self.assertEqual(prompt["imagen_anterior"]["layout"], "lista")
+        self.assertTrue(prompt["post"].startswith(POST_TEXT))
+        post = self.app.db.open_post()
+        self.assertEqual(post["card"]["layout"], "frase")
+        self.assertEqual(len(self.tg.photos), 2)
+
+        click(self.bot, old_publish)  # el botón de la imagen anterior ya no publica
+        drain(self.app)
+        self.assertEqual(self.li.posts(), [])
+        click(self.bot, self.tg.button("publish:"))
+        drain(self.app)
+        self.assertEqual(self.li.posts()[0]["content"]["media"]["altText"], ALT_CARD["alt"])
+
+    def test_an_invalid_image_twice_still_gives_a_post_with_the_link_card(self):
+        self.app.llm.runner = FakeClaude(images=[{"layout": "collage"}, {"layout": "collage"}])
+        self.app.draft()
+        self.assertEqual(len(self.app.llm.runner.prompts), 2)
+        self.assertIn("imagen:", self.app.llm.runner.prompts[1])
+        self.assertIsNone(self.app.db.open_post()["card"])
+        self.assertEqual(self.tg.photos, [])
+        self.assertIn("con tarjeta e imagen del enlace", self.tg.messages[-1][0])
+
+    def test_if_chromium_fails_the_post_goes_with_the_link_card(self):
+        connect(self.app)
+        self.app.render_png.fail = True
+        self.app.draft()
+        self.assertEqual(self.tg.photos, [])
+        click(self.bot, self.tg.button("publish:"))
+        drain(self.app)
+        self.assertIn("article", self.li.posts()[0]["content"])
+
+    def test_rejected_image_falls_back_to_the_link_card(self):
+        connect(self.app)
+        self.li.reject_media = True
+        self.app.draft()
+        click(self.bot, self.tg.button("publish:"))
+        drain(self.app)
+        posts = self.li.posts()
+        self.assertEqual([list(p["content"]) for p in posts], [["media"], ["article"]])
+        self.assertIn("ha rechazado la imagen", self.tg.text())
+        self.assertEqual(self.app.db.post(1)["status"], "published")
+
+    def test_old_images_are_pruned_but_not_the_open_drafts(self):
+        self.app.draft()
+        open_card = self.app.card_path(self.app.db.open_post()["id"])
+        old_card = self.app.cfg.cards_dir / "post-99.png"
+        old_card.write_bytes(b"x")
+        past = (self.app.now() - timedelta(days=90)).timestamp()
+        for path in (open_card, old_card):
+            os.utime(path, (past, past))
+        self.app.daily()
+        self.assertTrue(open_card.exists())
+        self.assertFalse(old_card.exists())
 
     def test_after_an_own_post_the_week_goes_to_outside_topics(self):
         connect(self.app)
@@ -82,6 +173,7 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(len(self.li.posts()), 1)
 
     def test_rejected_card_is_published_as_text_only(self):
+        self.use_app(VLA_IMAGES="0")
         connect(self.app)
         self.li.reject_article = True
         self.app.draft()
@@ -204,10 +296,7 @@ class FlowTest(unittest.TestCase):
         self.assertIsNone(self.app.db.get_meta("li_auth"))
 
     def test_dry_run_does_not_call_linkedin(self):
-        cleanup(self.app)
-        self.app = make_app(VLA_DRY_RUN="1")
-        self.bot, self.tg, self.li = bot_for(self.app), self.app.tg, self.app.li.request
-        self.app.collect()
+        self.use_app(VLA_DRY_RUN="1")
         self.app.draft()
         click(self.bot, self.tg.button("publish:"))
         drain(self.app)

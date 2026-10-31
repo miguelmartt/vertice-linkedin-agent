@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import secrets
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import http
@@ -27,6 +28,19 @@ class TelegramError(Exception):
     pass
 
 
+def multipart(fields: Dict[str, str], name: str, filename: str, content: bytes,
+              content_type: str) -> Tuple[bytes, str]:
+    """Cuerpo multipart/form-data con unos campos de texto y un archivo. Devuelve (cuerpo, Content-Type)."""
+    boundary = "vla-" + secrets.token_hex(16)
+    crlf = "\r\n"
+    parts = [f'--{boundary}{crlf}Content-Disposition: form-data; name="{key}"{crlf}{crlf}{value}{crlf}'.encode("utf-8")
+             for key, value in fields.items()]
+    parts.append(f'--{boundary}{crlf}Content-Disposition: form-data; name="{name}"; filename="{filename}"{crlf}'
+                 f"Content-Type: {content_type}{crlf}{crlf}".encode("utf-8") + content + crlf.encode("ascii"))
+    parts.append(f"--{boundary}--{crlf}".encode("utf-8"))
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
 class Telegram:
     def __init__(self, token: str, chat_id: str, dry_run: bool = False, printer: Callable[[str], None] = print):
         self.token = token
@@ -34,10 +48,16 @@ class Telegram:
         self.dry_run = dry_run
         self.printer = printer
 
-    def call(self, method: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 30) -> Any:
+    def call(self, method: str, payload: Optional[Dict[str, Any]] = None, timeout: float = 30,
+             upload: Optional[Tuple[bytes, str]] = None) -> Any:
+        """Llama a la Bot API. Con `upload` (cuerpo, Content-Type), envía un archivo en vez de JSON."""
         url = API.format(token=self.token, method=method)
         try:
-            raw = http.request("POST", url, json_body=payload or {}, timeout=timeout).body
+            if upload:
+                raw = http.request("POST", url, body=upload[0], headers={"Content-Type": upload[1]},
+                                   timeout=timeout).body
+            else:
+                raw = http.request("POST", url, json_body=payload or {}, timeout=timeout).body
         except http.HttpError as exc:
             raise TelegramError(str(exc)) from None
         data = json.loads(raw.decode("utf-8"))
@@ -63,6 +83,15 @@ class Telegram:
                 payload["reply_markup"] = keyboard(buttons)
             message_id = self.call("sendMessage", payload)["message_id"]
         return message_id
+
+    def send_photo(self, photo: bytes, caption: str = "") -> Optional[int]:
+        """Envía una imagen (PNG o JPG) con un pie corto en HTML. Devuelve el id del mensaje."""
+        if self.dry_run:
+            self.printer(f"[telegram] imagen de {len(photo)} bytes: {caption}")
+            return None
+        fields = {"chat_id": self.chat_id, "caption": caption[:1024], "parse_mode": "HTML"}
+        result = self.call("sendPhoto", timeout=60, upload=multipart(fields, "photo", "post.png", photo, "image/png"))
+        return result["message_id"]
 
     def edit_buttons(self, message_id: Optional[int], buttons: Optional[Sequence[Sequence[Button]]] = None) -> None:
         if self.dry_run or not message_id:

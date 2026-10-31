@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import struct
 import tempfile
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -28,6 +29,21 @@ POST_TEXT = (
     "→ Sin puertos abiertos: long polling.\n\n"
     "¿Lo usarías para tu empresa o prefieres escribir cada post a mano?"
 )
+
+
+CARD = {
+    "layout": "lista", "theme": "claro", "title": "Un agente que publica solo si tú quieres",
+    "highlight": "solo si tú quieres", "body": "",
+    "points": ["Busca novedades cada tres horas", "Redacta el post con Claude", "Publica cuando pulsas el botón"],
+    "stat": {"value": "", "label": ""}, "alt": "Cómo funciona el agente, en tres pasos",
+}
+ALT_CARD = {
+    "layout": "frase", "theme": "oscuro", "title": "Nada se publica sin tu visto bueno",
+    "highlight": "tu visto bueno", "body": "Un agente de LinkedIn con freno de mano.",
+    "points": [], "stat": {"value": "", "label": ""}, "alt": "Nada se publica sin tu visto bueno",
+}
+# Cabecera de un PNG de 1080 × 1350: lo único que mira el agente de la captura.
+FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + struct.pack(">II", 1080, 1350) + b"resto"
 
 
 def now_utc() -> datetime:
@@ -105,9 +121,15 @@ class FakeTG:
         self.messages: List[tuple] = []
         self.deleted: List[int] = []
         self.edited: List[Optional[int]] = []
+        self.photos: List[tuple] = []
 
     def send(self, text, buttons=None):
         self.messages.append((text, buttons))
+        return len(self.messages)
+
+    def send_photo(self, photo, caption=""):
+        self.photos.append((photo, caption))
+        self.messages.append((f"[imagen] {caption}", None))
         return len(self.messages)
 
     def edit_buttons(self, message_id, buttons=None):
@@ -141,20 +163,31 @@ class FakeTG:
 
 
 class FakeClaude:
-    """Elige el primer candidato y devuelve los textos que le pongas (o POST_TEXT)."""
+    """Elige el primer candidato y devuelve los textos e imágenes que le pongas (o POST_TEXT y CARD).
 
-    def __init__(self, texts: Optional[List[str]] = None, pick: Optional[str] = None) -> None:
+    A «Otra imagen» le contesta con las de `alt_images` (o ALT_CARD).
+    """
+
+    def __init__(self, texts: Optional[List[str]] = None, pick: Optional[str] = None,
+                 images: Optional[List[Any]] = None, alt_images: Optional[List[Any]] = None) -> None:
         self.prompts: List[str] = []
         self.texts = list(texts or [])
+        self.images = list(images or [])
+        self.alt_images = list(alt_images or [])
         self.pick = pick
 
     def __call__(self, cmd, input, **kwargs):  # noqa: A002 - firma de subprocess.run
         self.prompts.append(input)
         payload = json.loads(input.split("\n\nTu respuesta anterior")[0])
+        if "candidatos" not in payload:  # «Otra imagen»
+            out = self.alt_images.pop(0) if self.alt_images else ALT_CARD
+            stdout = json.dumps({"subtype": "success", "is_error": False, "structured_output": out, "total_cost_usd": 0})
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
         cands = payload["candidatos"]
         chosen = next((c for c in cands if self.pick and self.pick in c["titulo"]), cands[0])
         out = {"item_id": chosen["id"], "text": self.texts.pop(0) if self.texts else POST_TEXT,
-               "hashtags": ["IA", "#Open Source", "Automatización"], "why": "Es útil para empresas"}
+               "hashtags": ["IA", "#Open Source", "Automatización"], "why": "Es útil para empresas",
+               "image": self.images.pop(0) if self.images else CARD}
         stdout = json.dumps({"subtype": "success", "is_error": False, "structured_output": out, "total_cost_usd": 0})
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
@@ -163,6 +196,7 @@ class FakeLinkedIn:
     def __init__(self) -> None:
         self.calls: List[tuple] = []
         self.reject_article = False
+        self.reject_media = False
         self.status = 0
 
     def __call__(self, method: str, url: str, **kwargs: Any) -> Response:
@@ -180,13 +214,30 @@ class FakeLinkedIn:
         if url.startswith("https://www.linkedin.com/dms-uploads/"):
             return Response(201, {}, b"")
         if url == linkedin.POSTS_URL:
-            if self.reject_article and "content" in kwargs["json_body"]:
+            content = kwargs["json_body"].get("content") or {}
+            if self.reject_media and "media" in content:
+                raise HttpError(400, '{"message": "Invalid media"}', url)
+            if self.reject_article and "article" in content:
                 raise HttpError(400, '{"message": "Invalid thumbnail"}', url)
             return Response(201, {"x-restli-id": "urn:li:share:777"}, b"")
         raise AssertionError(f"URL inesperada: {url}")
 
     def posts(self) -> List[Dict[str, Any]]:
         return [kw["json_body"] for m, url, kw in self.calls if url == linkedin.POSTS_URL]
+
+
+class FakeRenderer:
+    """Chromium de mentira: guarda la página y devuelve un PNG (o falla si `fail`)."""
+
+    def __init__(self) -> None:
+        self.pages: List[str] = []
+        self.fail = False
+
+    def __call__(self, page: str) -> bytes:
+        self.pages.append(page)
+        if self.fail:
+            raise RuntimeError("Chromium se ha caído")
+        return FAKE_PNG + str(len(self.pages)).encode()
 
 
 def make_app(owners: str = "miguelmartt", **overrides: str) -> App:
@@ -211,6 +262,9 @@ def make_app(owners: str = "miguelmartt", **overrides: str) -> App:
     app.get_json = fake_get_json
     app.fetch = fake_fetch
     app.request = fake_request
+    if app.cfg.images:
+        app.chromium = "/usr/bin/chromium-de-prueba"
+        app.render_png = FakeRenderer()
     app._state = state  # type: ignore[attr-defined]
     return app
 

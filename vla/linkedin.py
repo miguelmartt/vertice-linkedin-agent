@@ -120,7 +120,7 @@ class LinkedIn:
         }
 
     def upload_image(self, token: str, owner: str, data: bytes) -> str:
-        """Sube una imagen (JPG, PNG o GIF) y devuelve su URN para usarla de miniatura."""
+        """Sube una imagen (JPG, PNG o GIF) y devuelve su URN: para la miniatura de la tarjeta o para un post con imagen."""
         init = self._json("POST", IMAGES_URL, headers=self._api_headers(token),
                           json_body={"initializeUploadRequest": {"owner": owner}})
         value = (init or {}).get("value") or {}
@@ -132,8 +132,11 @@ class LinkedIn:
         return str(image)
 
     def create_post(self, token: str, author: str, commentary: str,
-                    article: Optional[Dict[str, str]] = None) -> str:
-        """Publica en el perfil de `author` (urn:li:person:…) y devuelve la URN del post."""
+                    article: Optional[Dict[str, Any]] = None, image: Optional[Dict[str, str]] = None) -> str:
+        """Publica en el perfil de `author` (urn:li:person:…) y devuelve la URN del post.
+
+        Con `article`, el post lleva la tarjeta del enlace; con `image` ({id, altText}), una imagen grande.
+        """
         body: Dict[str, Any] = {
             "author": author,
             "commentary": commentary,
@@ -142,7 +145,9 @@ class LinkedIn:
             "lifecycleState": "PUBLISHED",
             "isReshareDisabledByAuthor": False,
         }
-        if article:
+        if image:
+            body["content"] = {"media": {"id": image["id"], "altText": image.get("altText") or ""}}
+        elif article:
             body["content"] = {"article": {k: v for k, v in article.items() if v}}
         resp = self._call("POST", POSTS_URL, headers=self._api_headers(token), json_body=body)
         urn = resp.headers.get("x-restli-id") or resp.headers.get("x-linkedin-id")

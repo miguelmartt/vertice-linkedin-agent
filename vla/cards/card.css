@@ -1,0 +1,232 @@
+/* Imagen de cada post (1080 × 1350). Mismo sistema que verticedev.es: tinta, blanco y un acento lima,
+   Geist y Geist Mono, sin sombras ni degradados. Las fuentes las añade card.py como data: URI. */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+    --bg: #0a0a0a;
+    --bg-2: #161617;
+    --fg: #f5f5f7;
+    --fg-2: #c7c7cc;
+    --muted: #8e8e93;
+    --line: #2a2a2d;
+    --accent: #c5ff3a;
+    --accent-ink: #0a0a0a;
+    --accent-text: #c5ff3a;
+}
+
+/* En claro, el lima nunca es texto: va de relleno con texto en tinta. */
+.claro {
+    --bg: #ffffff;
+    --bg-2: #f5f5f7;
+    --fg: #0a0a0a;
+    --fg-2: #3a3a3c;
+    --muted: #6e6e73;
+    --line: #e3e3e8;
+    --accent-text: #0a0a0a;
+}
+
+html, body { width: 1080px; height: 1350px; overflow: hidden; }
+
+body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Geist", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+}
+
+.card {
+    width: 1080px;
+    height: 1350px;
+    padding: 84px 88px 72px;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+}
+
+/* --- cabecera y pie ----------------------------------------------------- */
+
+.top, .foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 32px;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+}
+
+.brand svg { width: 46px; height: 46px; color: var(--fg); flex: none; }
+
+.mono {
+    font-family: "Geist Mono", monospace;
+    font-size: 24px;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+}
+
+.foot {
+    padding-top: 32px;
+    border-top: 2px solid var(--line);
+}
+
+.foot .site { color: var(--fg); }
+
+.foot .source {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* --- contenido ------------------------------------------------------------ */
+
+.main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 52px;
+    padding: 56px 0;
+}
+
+.eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-family: "Geist Mono", monospace;
+    font-size: 25px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.eyebrow::before {
+    content: "";
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+
+h1 {
+    font-weight: 600;
+    line-height: 1.03;
+    letter-spacing: -0.045em;
+    text-wrap: balance;
+}
+
+.s1 { font-size: 124px; }
+.s2 { font-size: 108px; }
+.s3 { font-size: 92px; }
+.s4 { font-size: 80px; }
+.s5 { font-size: 70px; }
+.s6 { font-size: 62px; }
+
+.hl { color: var(--accent-text); }
+
+/* Rotulador: una banda lisa en la mitad baja de las letras (dos cortes secos, sin transición),
+   para no tapar los rabos de la línea de arriba. */
+.claro .hl {
+    color: var(--accent-ink);
+    background-image: linear-gradient(transparent 52%, var(--accent) 52%, var(--accent) 94%, transparent 94%);
+    padding: 0 0.06em;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+}
+
+/* novedad: el cuadro «Qué significa» */
+.note {
+    background: var(--bg-2);
+    border: 2px solid var(--line);
+    border-radius: 32px;
+    padding: 44px 48px 48px;
+}
+
+.note .label {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 22px;
+    font-family: "Geist Mono", monospace;
+    font-size: 22px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.note .label::before {
+    content: "";
+    width: 13px;
+    height: 13px;
+    border-radius: 3px;
+    background: var(--accent);
+}
+
+.note p, .sub {
+    font-size: 38px;
+    line-height: 1.36;
+    letter-spacing: -0.012em;
+    color: var(--fg-2);
+    text-wrap: pretty;
+}
+
+.sub { font-size: 42px; max-width: 860px; }
+
+/* lista: puntos numerados */
+.points { list-style: none; }
+
+.points li {
+    display: flex;
+    align-items: baseline;
+    gap: 30px;
+    padding: 30px 0;
+    border-top: 2px solid var(--line);
+    font-size: 40px;
+    line-height: 1.26;
+    letter-spacing: -0.018em;
+    color: var(--fg);
+}
+
+.points li:last-child { border-bottom: 2px solid var(--line); }
+
+.points .n {
+    flex: none;
+    position: relative;
+    top: -5px;
+    padding: 6px 12px;
+    border-radius: 10px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-family: "Geist Mono", monospace;
+    font-size: 25px;
+    font-weight: 600;
+}
+
+/* dato: una cifra grande */
+.value {
+    font-weight: 700;
+    line-height: 0.92;
+    letter-spacing: -0.06em;
+    color: var(--accent-text);
+}
+
+.v1 { font-size: 300px; }
+.v2 { font-size: 230px; }
+.v3 { font-size: 170px; }
+.v4 { font-size: 128px; }
+
+.value-label {
+    margin-top: 26px;
+    font-size: 40px;
+    line-height: 1.3;
+    color: var(--fg-2);
+}

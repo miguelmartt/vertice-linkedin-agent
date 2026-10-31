@@ -73,6 +73,11 @@ exec runuser -u ${SERVICE_USER} -- env -i HOME=${STATE_DIR} VLA_STATE_DIR=${STAT
 EOF
 chmod 0755 /usr/local/bin/vla
 
+if ! command -v chromium-browser >/dev/null && [[ ! -x /usr/lib64/chromium-browser/headless_shell ]]; then
+    warn "Sin Chromium los posts salen sin imagen (con la tarjeta del enlace). Para las imágenes:"
+    warn "  dnf install -y epel-release && dnf install -y chromium-headless"
+fi
+
 claude_bin="${STATE_DIR}/.local/bin/claude"
 if [[ ! -x "${claude_bin}" ]]; then
     warn "Claude Code no está instalado para ${SERVICE_USER}. Instálalo con:"

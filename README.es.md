@@ -2,15 +2,16 @@
 
 [Read in English](README.md)
 
-Agente de LinkedIn que vive en tu VPS como servicio de systemd. Busca novedades de IA y desarrollo, redacta un post con Claude Code y te lo manda a Telegram. Solo lo publica en tu perfil si pulsas «Publicar».
+Agente de LinkedIn que vive en tu VPS como servicio de systemd. Busca novedades de IA y desarrollo, redacta un post con Claude Code, le hace una imagen con tu estilo y te lo manda a Telegram. Solo lo publica en tu perfil si pulsas «Publicar».
 
 Lo hice para el LinkedIn de [VérticeDev](https://verticedev.es) y lo publico tal cual, con licencia MIT.
 
 - **Busca** cada tres horas en cinco sitios: modelos en tendencia en Hugging Face, repos recientes que ganan estrellas en GitHub, la portada de Hacker News, los blogs de los laboratorios de IA (OpenAI, Google DeepMind, Google AI, Hugging Face y Mistral) y tus propios repos open source.
 - **Redacta** lunes, miércoles y viernes a las 08:30 con Claude Code y tu suscripción, no con la API. Claude elige el tema entre los mejores de cada tipo, lee la página o el README y escribe el post en castellano, sin humo y sin inventar cifras.
 - **Promociona tus repos** sin cansar: como mucho un post a la semana sobre un repo tuyo. Las versiones nuevas tienen prioridad, y `/repos` te deja elegir uno cuando quieras.
-- **Te pregunta** por Telegram, con cuatro botones: Publicar, Cambios, Otro tema y Descartar. En «Cambios» puedes decirle qué cambiar o pegarle el texto ya corregido.
-- **Publica** con la API oficial de LinkedIn (Posts API), con la tarjeta del enlace (título, descripción e imagen) y el texto escapado para que LinkedIn no lo corte.
+- **Hace la imagen** de cada post. Claude elige el diseño (novedad, lista, dato o frase) y escribe lo que pone; una plantilla HTML con tu estilo le da la forma y Chromium sin interfaz la convierte en un PNG de 1080 × 1350.
+- **Te pregunta** por Telegram con la imagen y el texto, y cinco botones: Publicar, Cambios, Otra imagen, Otro tema y Descartar. En «Cambios» puedes decirle qué cambiar o pegarle el texto ya corregido.
+- **Publica** con la API oficial de LinkedIn (Posts API): la imagen grande y el enlace en el texto, escapado para que LinkedIn no lo corte. Sin imagen, el post sale con la tarjeta del enlace.
 
 Solo librería estándar de Python (3.9 o superior), SQLite y long polling de Telegram: sin dependencias y sin puertos abiertos.
 
@@ -18,9 +19,10 @@ Solo librería estándar de Python (3.9 o superior), SQLite y long polling de Te
 
 ```
 cada 3 h ───── buscar ─ Hugging Face · GitHub · Hacker News · blogs de IA · tus repos → temas puntuados
-lun, mié, vie ─ redactar ─ lista corta (o un repo tuyo) → Claude elige y escribe → Telegram
-              [Publicar] [Cambios] [Otro tema] [Descartar]
-Publicar ───── imagen de la tarjeta → Posts API → enlace al post
+lun, mié, vie ─ redactar ─ lista corta (o un repo tuyo) → Claude elige, escribe y diseña la imagen
+              → plantilla HTML → Chromium → PNG → Telegram
+              [Publicar] [Cambios] [Otra imagen] [Otro tema] [Descartar]
+Publicar ───── sube la imagen → Posts API → enlace al post
 cada día ───── avisos del permiso de LinkedIn (7 y 2 días antes) y limpieza de temas viejos
 ```
 
@@ -44,6 +46,7 @@ La puntuación solo ordena dentro de cada tipo: tendencia en Hugging Face, estre
 - **Solo tú** puedes usar el bot: tu usuario, en tu chat privado con él.
 - **Todo lo de fuera es no fiable.** Las páginas, los README y los feeds se leen como datos, se recortan y nunca se ejecutan. Las URL que llegan de Hacker News o de un feed solo se piden si van a una IP pública, también tras cada redirección: un enlace no puede hacer que el agente pida algo a la red interna del VPS.
 - **Claude no tiene herramientas**: sin acceso a archivos, a la red ni a comandos, en una carpeta vacía y solo con su token. Lo que escribe lo revisas tú antes de publicarlo.
+- **La imagen no ejecuta nada.** Lo que escribe Claude va escapado en una plantilla propia, con las fuentes dentro de la página y una CSP `default-src 'none'`: sin scripts ni red. Chromium solo hace la captura, sin tokens en su entorno.
 - **Los secretos no salen.** El código de LinkedIn que pegas se borra del chat. Los tokens se tapan en los logs y en los errores. Claude no recibe los tokens del agente ni una clave de API.
 - **Servicio aislado con systemd**: usuario propio, solo escribe en su carpeta de estado y no puede ejecutar nada de ella salvo Claude Code.
 
@@ -60,6 +63,7 @@ La puntuación solo ordena dentro de cada tipo: tendencia en Hugging Face, estre
 ```bash
 git clone https://github.com/miguelmartt/vertice-linkedin-agent.git /root/vertice-linkedin-agent
 bash /root/vertice-linkedin-agent/deploy/install.sh
+dnf install -y epel-release && dnf install -y chromium-headless   # para las imágenes
 runuser -u vla -- env HOME=/var/lib/vertice-linkedin-agent bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
 nano /etc/vertice-linkedin-agent/env      # tus datos y tokens
 bash /root/vertice-linkedin-agent/deploy/install.sh   # comprueba todo y arranca
@@ -93,7 +97,8 @@ En tu ordenador, lo mismo con `python -m vla --env-file mi.env <orden>` desde la
 
 ## Límites conocidos
 
-- La API de LinkedIn no genera la vista previa de los enlaces: el agente sube la imagen de la página (`og:image`). Si LinkedIn rechaza la tarjeta, publica el post sin ella y te lo dice.
+- La API de LinkedIn no genera la vista previa de los enlaces. Con imagen, el enlace va en el texto; sin ella, el agente monta la tarjeta con la imagen de la página (`og:image`). Si LinkedIn rechaza la imagen o la tarjeta, publica sin ella y te lo dice.
+- La imagen lleva tu marca (`VLA_CARD_BRAND`), tu web (`VLA_SITE_URL`) y el logo de `vla/cards/logo.svg`: cámbialo por el tuyo. Los colores y la tipografía están en `vla/cards/card.css` (Geist, licencia OFL).
 - LinkedIn retira cada versión de su API al año. El agente avisa cuando la de `VLA_LINKEDIN_VERSION` tiene diez meses.
 - Claude Code gasta del cupo de tu suscripción. Hay un tope diario de llamadas (`VLA_LLM_MAX_CALLS_PER_DAY`); un borrador es una llamada (dos si el primero no cumple las reglas).
 - Sin token, la API de GitHub da 60 peticiones por hora: de sobra para una búsqueda cada tres horas con unos pocos repos propios.
@@ -104,7 +109,7 @@ En tu ordenador, lo mismo con `python -m vla --env-file mi.env <orden>` desde la
 python -m unittest discover -s tests -t .
 ```
 
-Incluyen un recorrido completo con dobles de Telegram, Claude, LinkedIn y las fuentes: búsqueda, borrador, cambios, otro tema, publicación con tarjeta, tarjeta rechazada, token revocado y doble clic. También cubren los casos de seguridad: escape del texto de LinkedIn, permiso con `state` de un solo uso, usuarios ajenos, URL internas y secretos en logs y subprocesos.
+Incluyen un recorrido completo con dobles de Telegram, Claude, Chromium, LinkedIn y las fuentes: búsqueda, borrador con imagen, otra imagen, cambios, otro tema, publicación con imagen o con tarjeta, imagen rechazada, Chromium caído, token revocado y doble clic. También cubren los casos de seguridad: escape del texto de LinkedIn y de la imagen, permiso con `state` de un solo uso, usuarios ajenos, URL internas y secretos en logs y subprocesos. Con `VLA_TEST_CHROMIUM=<ruta de Chromium o Chrome>`, además se pintan los cuatro diseños de verdad.
 
 ## Licencia
 

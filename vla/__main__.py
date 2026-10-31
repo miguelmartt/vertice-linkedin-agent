@@ -9,10 +9,11 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from datetime import timedelta
 from typing import List, Optional
 
-from . import __version__, sources
+from . import __version__, card, sources
 from .config import Config, ConfigError, load_env_file
 from .util import parse_date
 
@@ -85,6 +86,21 @@ def cmd_check(cfg: Config, claude: bool = False) -> int:
                 line(False, "Chat con el bot", hint, required=False)
         except Exception as exc:
             line(False, "Telegram", str(exc)[:200])
+    if not cfg.images:
+        line(True, "Imágenes", "desactivadas (VLA_IMAGES=0): los posts salen con la tarjeta del enlace")
+    elif not app.chromium:
+        line(False, "Imágenes", "falta Chromium: dnf install chromium-headless (o VLA_CHROMIUM)", required=False)
+    else:
+        try:
+            started = time.monotonic()
+            sample = {"layout": "frase", "theme": "oscuro", "title": "Prueba de imagen", "highlight": "imagen",
+                      "body": "", "alt": "Prueba"}
+            png = app.render_png(card.html_for(sample, eyebrow="Prueba", source="", brand=cfg.card_brand,
+                                               site=cfg.site_host, day=app.today()))
+            width, height = card.png_size(png)
+            line(True, "Imágenes", f"{width}×{height} en {time.monotonic() - started:.1f} s con {app.chromium}")
+        except Exception as exc:
+            line(False, "Imágenes", str(exc)[:300], required=False)
     profile = app.db.get_meta("li_profile") or {}
     expires = parse_date((app.db.get_meta("li_token") or {}).get("expires_at"))
     if profile.get("sub") and expires and expires > app.now():
